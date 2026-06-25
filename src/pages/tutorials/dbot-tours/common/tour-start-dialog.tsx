@@ -1,9 +1,9 @@
+// @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import React from 'react';
 import { observer } from 'mobx-react-lite';
 import Dialog from '@/components/shared_ui/dialog';
 import Text from '@/components/shared_ui/text';
 import { DBOT_TABS } from '@/constants/bot-contents';
-import useIsTNCNeeded from '@/hooks/useIsTNCNeeded';
 import { useStore } from '@/hooks/useStore';
 import { Localize, localize } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
@@ -17,10 +17,9 @@ import { setTourSettings, tour_list } from '../utils';
 import './tour-start-dialog.scss';
 
 const TourStartDialog = observer(() => {
-    const { dashboard, client } = useStore();
+    const { dashboard } = useStore();
     const { active_tab, is_tour_dialog_visible, setTourDialogVisibility, setActiveTour, setShowMobileTourDialog } =
         dashboard;
-    const { is_platform_migrated } = client;
     const { isDesktop } = useDevice();
     const tour_token = active_tab === 0 ? 'onboard_tour_token' : 'bot_builder_token';
     const toggleTour = () => {
@@ -34,19 +33,14 @@ const TourStartDialog = observer(() => {
     const tour_dialog_info = getTourDialogInfo(!isDesktop);
     const tour_dialog_action = getTourDialogAction(!isDesktop);
     const [is_tour_open, setIsTourOpen] = React.useState(false);
-    const is_tnc_needed = useIsTNCNeeded();
 
     React.useEffect(() => {
-        if (is_tnc_needed || is_platform_migrated) {
-            setIsTourOpen(false);
+        if (is_tour_dialog_visible) {
+            setIsTourOpen(true);
         } else {
-            if (is_tour_dialog_visible) {
-                setIsTourOpen(true);
-            } else {
-                setIsTourOpen(false);
-            }
+            setIsTourOpen(false);
         }
-    }, [is_tnc_needed, is_platform_migrated, is_tour_dialog_visible]);
+    }, [is_tour_dialog_visible]);
 
     const getTourContent = () => {
         return (

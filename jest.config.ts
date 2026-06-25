@@ -3,7 +3,20 @@
  * https://jestjs.io/docs/configuration
  */
 
+import fs from 'fs';
+import path from 'path';
+
 import type { Config } from 'jest';
+
+// `@deriv-com/ui` defines no CJS main in its `exports` map, so jest can't
+// resolve it via node resolution — it must be mapped to the package directory.
+// Resolve that directory robustly for both the monorepo (npm workspaces hoist
+// it to the repo root) and a standalone build (local node_modules).
+const derivComUiDir =
+    [
+        path.join(__dirname, 'node_modules/@deriv-com/ui'),
+        path.join(__dirname, '../../node_modules/@deriv-com/ui'),
+    ].find(candidate => fs.existsSync(candidate)) ?? path.join(__dirname, 'node_modules/@deriv-com/ui');
 
 const config: Config = {
     // All imported modules in your tests should be mocked automatically
@@ -82,15 +95,16 @@ const config: Config = {
         '\\.(gif|ttf|eot|svg)$': '<rootDir>/__mocks__/fileMock.js',
         'react-dom/server': '<rootDir>/__mocks__/react-dom-server.js',
         '@deriv-com/translations': '<rootDir>/__mocks__/translation.mock.js',
-        '@deriv-com/ui': '<rootDir>/node_modules/@deriv-com/ui',
-        '@deriv-com/auth-client': '<rootDir>/node_modules/@deriv-com/auth-client',
+        '@deriv-com/ui': derivComUiDir,
         '^@/external/(.*)$': '<rootDir>/src/external/$1',
+        '^@/adapters/(.*)$': '<rootDir>/src/adapters/$1',
         '^@/utils/(.*)$': '<rootDir>/src/utils/$1',
         '^@/components/(.*)$': '<rootDir>/src/components/$1',
         '^@/constants/(.*)$': '<rootDir>/src/constants/$1',
         '^@/hooks/(.*)$': '<rootDir>/src/hooks/$1',
         '^@/stores/(.*)$': '<rootDir>/src/stores/$1',
         '^@/pages/(.*)$': '<rootDir>/src/pages/$1',
+        '^@/services/(.*)$': '<rootDir>/src/services/$1',
     },
 
     // An array of regexp pattern strings, matched against all module paths before considered 'visible' to the module loader
@@ -180,7 +194,7 @@ const config: Config = {
     },
 
     // An array of regexp pattern strings that are matched against all source file paths, matched files will skip transformation
-    transformIgnorePatterns: ['/node_modules/(?!@deriv-com/ui|@deriv-com/auth-client).+\\.js$'],
+    transformIgnorePatterns: ['/node_modules/(?!@deriv-com/ui).+\\.js$'],
 
     // An array of regexp pattern strings that are matched against all modules before the module loader will automatically return a mock for them
     // unmockedModulePathPatterns: undefined,

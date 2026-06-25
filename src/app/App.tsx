@@ -1,129 +1,116 @@
-import { initSurvicate } from '../public-path';
 import { lazy, Suspense } from 'react';
 import React from 'react';
 import { createBrowserRouter, createRoutesFromElements, Route, RouterProvider } from 'react-router-dom';
+import { cleanupUrl, handleOAuthCallback } from '@/external/deriv-core';
 import ChunkLoader from '@/components/loader/chunk-loader';
+import LocalStorageSyncWrapper from '@/components/localStorage-sync-wrapper';
 import RoutePromptDialog from '@/components/route-prompt-dialog';
-import { crypto_currencies_display_order, fiat_currencies_display_order } from '@/components/shared';
-import { useOfflineDetection } from '@/hooks/useOfflineDetection';
+import { useAccountSwitching } from '@/hooks/useAccountSwitching';
+import { useLanguageFromURL } from '@/hooks/useLanguageFromURL';
 import { StoreProvider } from '@/hooks/useStore';
-import CallbackPage from '@/pages/callback';
-import Endpoint from '@/pages/endpoint';
-import { TAuthData } from '@/types/api-types';
-import { initializeI18n, localize, TranslationProvider } from '@deriv-com/translations';
+import { isPreviewMode, PREVIEW_BASE_PATH } from '@/utils/is-preview-mode';
+import { localize, TranslationProvider } from '@deriv-com/translations';
 import CoreStoreProvider from './CoreStoreProvider';
+import i18nInstance from './i18n';
 import './app-root.scss';
 
 const Layout = lazy(() => import('../components/layout'));
 const AppRoot = lazy(() => import('./app-root'));
 
-const { TRANSLATIONS_CDN_URL, R2_PROJECT_NAME, CROWDIN_BRANCH_NAME } = process.env;
-const i18nInstance = initializeI18n({
-    cdnUrl: `${TRANSLATIONS_CDN_URL}/${R2_PROJECT_NAME}/${CROWDIN_BRANCH_NAME}`,
-});
-
-// Simple Suspense wrapper without timeout that causes dark landing page
-const SuspenseWrapper = ({ children }: { children: React.ReactNode }) => {
-    const { isOnline } = useOfflineDetection();
-
-    const getLoadingMessage = () => {
-        if (!isOnline) return localize('Loading offline dashboard...');
-        return localize('Please wait while we connect to the server...');
-    };
-
-    return <Suspense fallback={<ChunkLoader message={getLoadingMessage()} />}>{children}</Suspense>;
+/**
+ * Component wrapper to handle language URL parameter
+ * Uses the useLanguageFromURL hook to process language switching
+ */
+const LanguageHandler = ({ children }: { children: React.ReactNode }) => {
+    useLanguageFromURL();
+    return <>{children}</>;
 };
+
+// The static preview build is served under /bot/preview (see rsbuild.config.ts
+// assetPrefix), so React Router must resolve routes under that prefix. Standalone
+// partner deploys are served at the root, so no basename there.
+const routerBasename = isPreviewMode() ? PREVIEW_BASE_PATH : undefined;
 
 const router = createBrowserRouter(
     createRoutesFromElements(
         <Route
             path='/'
             element={
-                <SuspenseWrapper>
+                <Suspense
+                    fallback={<ChunkLoader message={localize('Please wait while we connect to the server...')} />}
+                >
                     <TranslationProvider defaultLang='EN' i18nInstance={i18nInstance}>
-                        <StoreProvider>
-                            <RoutePromptDialog />
-                            <CoreStoreProvider>
-                                <Layout />
-                            </CoreStoreProvider>
-                        </StoreProvider>
+                        <LanguageHandler>
+                            <StoreProvider>
+                                <LocalStorageSyncWrapper>
+                                    <RoutePromptDialog />
+                                    <CoreStoreProvider>
+                                        <Layout />
+                                    </CoreStoreProvider>
+                                </LocalStorageSyncWrapper>
+                            </StoreProvider>
+                        </LanguageHandler>
                     </TranslationProvider>
-                </SuspenseWrapper>
+                </Suspense>
             }
         >
             {/* All child routes will be passed as children to Layout */}
             <Route index element={<AppRoot />} />
-            <Route path='endpoint' element={<Endpoint />} />
-            <Route path='callback' element={<CallbackPage />} />
+            {/* App Builder embeds the template at /preview — render the same app shell */}
+            <Route path='preview' element={<AppRoot />} />
         </Route>
-    )
+    ),
+    { basename: routerBasename }
 );
 
+/**
+ * Main App component
+ *
+ * Responsibilities:
+ * 1. OAuth callback handling (via vendored deriv-core handleOAuthCallback)
+ * 2. Account switching from URL (via useAccountSwitching hook)
+ * 3. Router provider setup
+ */
 function App() {
-    React.useEffect(() => {
-        // Use the invalid token handler hook to automatically retrigger OIDC authentication
-        // when an invalid token is detected and the cookie logged state is true
+    // Handle account switching via URL parameter
+    useAccountSwitching();
 
-        initSurvicate();
-        window?.dataLayer?.push({ event: 'page_load' });
-        return () => {
-            // Clean up the invalid token handler when the component unmounts
-            const survicate_box = document.getElementById('survicate-box');
-            if (survicate_box) {
-                survicate_box.style.display = 'none';
+    React.useEffect(() => {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (!urlParams.has('code')) return;
+
+        const handleCallback = async () => {
+            try {
+                const authInfo = await handleOAuthCallback(window.location.href, {
+                    clientId: process.env.NEXT_PUBLIC_DERIV_APP_ID || '',
+                    redirectUri: window.location.origin,
+                    scopes: 'trade',
+                });
+
+                const { DerivWSAccountsService } = await import('@/services/derivws-accounts.service');
+                const accounts = await DerivWSAccountsService.fetchAccountsList(authInfo.access_token);
+
+                if (accounts && accounts.length > 0) {
+                    DerivWSAccountsService.storeAccounts(accounts);
+                    const firstAccount = accounts[0];
+                    localStorage.setItem('active_loginid', firstAccount.account_id);
+                    const isDemo =
+                        firstAccount.account_id.startsWith('VRT') || firstAccount.account_id.startsWith('VRTC');
+                    localStorage.setItem('account_type', isDemo ? 'demo' : 'real');
+
+                    const { api_base } = await import('@/external/bot-skeleton');
+                    await api_base.init(true);
+                } else {
+                    console.error('No accounts returned after authentication');
+                }
+            } catch (error) {
+                console.error('OAuth callback error:', error);
+            } finally {
+                cleanupUrl(window.location.origin);
             }
         };
-    }, []);
 
-    React.useEffect(() => {
-        const accounts_list = localStorage.getItem('accountsList');
-        const client_accounts = localStorage.getItem('clientAccounts');
-        const url_params = new URLSearchParams(window.location.search);
-        const account_currency = url_params.get('account');
-        const validCurrencies = [...fiat_currencies_display_order, ...crypto_currencies_display_order];
-
-        const is_valid_currency = account_currency && validCurrencies.includes(account_currency?.toUpperCase());
-
-        if (!accounts_list || !client_accounts) return;
-
-        try {
-            const parsed_accounts = JSON.parse(accounts_list);
-            const parsed_client_accounts = JSON.parse(client_accounts) as TAuthData['account_list'];
-
-            const updateLocalStorage = (token: string, loginid: string) => {
-                localStorage.setItem('authToken', token);
-                localStorage.setItem('active_loginid', loginid);
-            };
-
-            // Handle demo account
-            if (account_currency?.toUpperCase() === 'DEMO') {
-                const demo_account = Object.entries(parsed_accounts).find(([key]) => key.startsWith('VR'));
-
-                if (demo_account) {
-                    const [loginid, token] = demo_account;
-                    updateLocalStorage(String(token), loginid);
-                    return;
-                }
-            }
-
-            // Handle real account with valid currency
-            if (account_currency?.toUpperCase() !== 'DEMO' && is_valid_currency) {
-                const real_account = Object.entries(parsed_client_accounts).find(
-                    ([loginid, account]) =>
-                        !loginid.startsWith('VR') && account.currency.toUpperCase() === account_currency?.toUpperCase()
-                );
-
-                if (real_account) {
-                    const [loginid, account] = real_account;
-                    if ('token' in account) {
-                        updateLocalStorage(String(account?.token), loginid);
-                    }
-                    return;
-                }
-            }
-        } catch (e) {
-            console.warn('Error', e); // eslint-disable-line no-console
-        }
+        handleCallback();
     }, []);
 
     return <RouterProvider router={router} />;

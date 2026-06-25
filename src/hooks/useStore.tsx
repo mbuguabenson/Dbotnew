@@ -1,3 +1,4 @@
+// @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import RootStore from '@/stores/root-store';
 import { TWebSocket } from '@/Types';

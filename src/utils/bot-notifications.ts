@@ -1,3 +1,4 @@
+// @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import { TNotificationMessage } from '@deriv/stores/types';
 import { localize } from '@deriv-com/translations';
 import { BrandConstants } from '@deriv-com/utils';

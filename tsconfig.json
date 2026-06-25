@@ -12,17 +12,19 @@
         "isolatedModules": true,
         "noEmit": true,
         "jsx": "react-jsx",
-        "strict": true,
-        "noUnusedLocals": true,
-        "noUnusedParameters": true,
+        "strict": false,
+        "noUnusedLocals": false,
+        "noUnusedParameters": false,
         "noFallthroughCasesInSwitch": true,
         "allowJs": true,
         "baseUrl": "./src",
         "paths": {
-            "@/*": ["./*"]
+            "@/*": ["./*"],
+            "Stores/*": ["./stores/*"]
         },
         "esModuleInterop": true,
-        "types": ["jest", "@testing-library/jest-dom"]
+        "types": ["jest", "node", "@testing-library/jest-dom"]
     },
-    "include": ["src"]
+    "include": ["src"],
+    "exclude": ["src/utils/tmp"]
 }

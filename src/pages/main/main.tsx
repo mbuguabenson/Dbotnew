@@ -1,3 +1,4 @@
+// @ts-nocheck — vendored bot code with known upstream type gaps; see AGENTS.md
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import classNames from 'classnames';
 import { observer } from 'mobx-react-lite';
@@ -8,23 +9,33 @@ import DesktopWrapper from '@/components/shared_ui/desktop-wrapper';
 import Dialog from '@/components/shared_ui/dialog';
 import MobileWrapper from '@/components/shared_ui/mobile-wrapper';
 import Tabs from '@/components/shared_ui/tabs/tabs';
+import TradeTypeConfirmationModal from '@/components/trade-type-confirmation-modal';
 import TradingViewModal from '@/components/trading-view-chart/trading-view-modal';
 import { DBOT_TABS, TAB_IDS } from '@/constants/bot-contents';
 import { api_base, updateWorkspaceName } from '@/external/bot-skeleton';
 import { CONNECTION_STATUS } from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
 import { isDbotRTL } from '@/external/bot-skeleton/utils/workspace';
-import { useOauth2 } from '@/hooks/auth/useOauth2';
 import { useApiBase } from '@/hooks/useApiBase';
 import { useStore } from '@/hooks/useStore';
-import useTMB from '@/hooks/useTMB';
-import { handleOidcAuthFailure } from '@/utils/auth-utils';
+import {
+    disableUrlParameterApplication,
+    enableUrlParameterApplication,
+    setupTradeTypeChangeListener,
+} from '@/utils/blockly-url-param-handler';
+import {
+    checkAndShowTradeTypeModal,
+    getModalState,
+    handleTradeTypeCancel,
+    handleTradeTypeConfirm,
+    resetUrlParamProcessing,
+    setModalStateChangeCallback,
+} from '@/utils/trade-type-modal-handler';
 import {
     LabelPairedChartLineCaptionRegularIcon,
     LabelPairedObjectsColumnCaptionRegularIcon,
     LabelPairedPuzzlePieceTwoCaptionBoldIcon,
 } from '@deriv/quill-icons/LabelPaired';
 import { LegacyGuide1pxIcon } from '@deriv/quill-icons/Legacy';
-import { requestOidcAuthentication } from '@deriv-com/auth-client';
 import { Localize, localize } from '@deriv-com/translations';
 import { useDevice } from '@deriv-com/ui';
 import RunPanel from '../../components/run-panel';
@@ -38,7 +49,8 @@ const Tutorial = lazy(() => import('../tutorials'));
 
 const AppWrapper = observer(() => {
     const { connectionStatus } = useApiBase();
-    const { dashboard, load_modal, run_panel, quick_strategy, summary_card } = useStore();
+    const { dashboard, load_modal, run_panel, quick_strategy, summary_card, blockly_store } = useStore();
+    const { is_loading } = blockly_store;
     const {
         active_tab,
         active_tour,
@@ -73,15 +85,62 @@ const AppWrapper = observer(() => {
     const [left_tab_shadow, setLeftTabShadow] = useState<boolean>(false);
     const [right_tab_shadow, setRightTabShadow] = useState<boolean>(false);
 
+    // Trade type modal state
+    const [tradeTypeModalState, setTradeTypeModalState] = useState(getModalState());
+
+    /**
+     * Helper function to get modal props with enhanced type safety and clear documentation
+     *
+     * Props serve distinct purposes:
+     * - current_trade_type: Technical identifier for API/internal use (format: "category/type")
+     * - current_trade_type_display_name: Human-readable name for UI display
+     *
+     * This separation ensures proper data flow between technical systems and user interface
+     */
+    const getTradeTypeModalProps = () => {
+        const { tradeTypeData } = tradeTypeModalState;
+
+        return {
+            is_visible: tradeTypeModalState.isVisible,
+            trade_type_display_name: tradeTypeData?.displayName || '',
+
+            // Technical identifier for internal/API use (e.g., "callput/callput")
+            // Used by backend systems and technical integrations
+            current_trade_type: tradeTypeData?.currentTradeType
+                ? `${tradeTypeData.currentTradeType.tradeTypeCategory}/${tradeTypeData.currentTradeType.tradeType}`
+                : 'N/A',
+
+            // Human-readable display name for UI (e.g., "Rise/Fall")
+            // Used for user-facing text and modal content
+            current_trade_type_display_name: tradeTypeData?.currentTradeTypeDisplayName || 'N/A',
+
+            onConfirm: handleTradeTypeConfirm,
+            onCancel: handleTradeTypeCancel,
+        };
+    };
+
+    // App Builder embeds the bot at /bot/preview — open the bot builder there by
+    // default (instead of the dashboard) when no explicit #tab hash is present.
+    const is_preview_mode = window.location.pathname.includes('/preview');
     let tab_value: number | string = active_tab;
     const GetHashedValue = (tab: number) => {
         tab_value = location.hash?.split('#')[1];
-        if (!tab_value) return tab;
+        if (!tab_value) return is_preview_mode ? BOT_BUILDER : tab;
         return Number(hash.indexOf(String(tab_value)));
     };
     const active_hash_tab = GetHashedValue(active_tab);
 
-    const { onRenderTMBCheck, isTmbEnabled } = useTMB();
+    // Set up modal state change listener
+    React.useEffect(() => {
+        setModalStateChangeCallback(new_state => {
+            setTradeTypeModalState(new_state);
+        });
+    }, [is_loading]);
+
+    // Reset URL parameter processing when location changes
+    React.useEffect(() => {
+        resetUrlParamProcessing();
+    }, [location.search]);
 
     React.useEffect(() => {
         const el_dashboard = document.getElementById('id-dbot-dashboard');
@@ -144,19 +203,89 @@ const AppWrapper = observer(() => {
     };
 
     React.useEffect(() => {
+        let pollTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+        // Handle URL trade type parameters when switching to Bot Builder tab
+        if (active_tab === BOT_BUILDER) {
+            // Use requestAnimationFrame to ensure Blockly workspace is fully initialized
+            requestAnimationFrame(() => {
+                // Disable automatic URL parameter application to prevent changes before modal
+                disableUrlParameterApplication();
+
+                // Set up listener for manual trade type changes (only once)
+                setupTradeTypeChangeListener();
+
+                // Create unified handler for both immediate and delayed execution
+                const handleTradeTypeModal = () => {
+                    checkAndShowTradeTypeModal(
+                        // onConfirm: Changes are now handled by the modal component
+                        () => {
+                            // Re-enable URL parameter application for future parameters
+                            enableUrlParameterApplication();
+                        },
+                        // onCancel: URL parameter removal is now handled by the modal component
+                        () => {}
+                    );
+                };
+
+                // Wait for Blockly to finish loading before checking for URL parameters
+                if (!blockly_store.is_loading) {
+                    // Blockly is loaded, but add longer delay to ensure workspace is fully initialized
+                    // and trade type fields are populated
+                    setTimeout(() => {
+                        handleTradeTypeModal();
+                    }, 500);
+                } else {
+                    // Blockly is still loading, wait for it to finish with optimized polling
+                    let pollAttempts = 0;
+                    const maxPollAttempts = 10; // Maximum 5 seconds (10 * 500ms) - optimized performance
+
+                    const checkBlocklyLoaded = () => {
+                        if (!blockly_store.is_loading) {
+                            handleTradeTypeModal();
+                            return; // Exit polling once loaded
+                        }
+
+                        if (pollAttempts < maxPollAttempts) {
+                            pollAttempts++;
+                            // Use 500ms intervals for better performance (5x improvement from 100ms)
+                            pollTimeoutId = setTimeout(checkBlocklyLoaded, 500);
+                        } else {
+                            console.warn(
+                                'Blockly loading timeout after 5 seconds - proceeding without URL parameter check'
+                            );
+                        }
+                    };
+
+                    checkBlocklyLoaded();
+                }
+            });
+        }
+
+        // Cleanup function to prevent memory leaks
+        return () => {
+            if (pollTimeoutId) {
+                clearTimeout(pollTimeoutId);
+                pollTimeoutId = null;
+            }
+        };
+    }, [active_tab, is_loading]);
+
+    React.useEffect(() => {
         // Run on mount and when active tab changes
         updateTabShadowsHeight();
 
         if (is_open) {
             setTourDialogVisibility(false);
         }
-
         if (init_render.current) {
             setActiveTab(Number(active_hash_tab));
             if (!isDesktop) handleTabChange(Number(active_hash_tab));
             init_render.current = false;
         } else {
-            navigate({ search: window.location.search, hash: `#${hash[active_tab] || hash[0]}` });
+            // Preserve URL parameters when navigating
+            const currentSearch = window.location.search;
+            navigate(`${currentSearch}#${hash[active_tab] || hash[0]}`);
         }
         if (active_tour !== '') {
             setActiveTour('');
@@ -227,43 +356,16 @@ const AppWrapper = observer(() => {
         [active_tab]
     );
 
-    const { isOAuth2Enabled } = useOauth2();
+    // [AI]
     const handleLoginGeneration = async () => {
-        if (!isOAuth2Enabled) {
-            window.location.replace(generateOAuthURL());
+        const oauthUrl = await generateOAuthURL();
+        if (oauthUrl) {
+            window.location.replace(oauthUrl);
         } else {
-            const getQueryParams = new URLSearchParams(window.location.search);
-            const currency = getQueryParams.get('account') ?? '';
-            const query_param_currency = currency || sessionStorage.getItem('query_param_currency') || 'USD';
-
-            try {
-                // First, explicitly wait for TMB status to be determined
-                const tmbEnabled = await isTmbEnabled();
-                // Now use the result of the explicit check
-                if (tmbEnabled) {
-                    await onRenderTMBCheck();
-                } else {
-                    try {
-                        await requestOidcAuthentication({
-                            redirectCallbackUri: `${window.location.origin}/callback`,
-                            ...(query_param_currency
-                                ? {
-                                      state: {
-                                          account: query_param_currency,
-                                      },
-                                  }
-                                : {}),
-                        });
-                    } catch (err) {
-                        handleOidcAuthFailure(err);
-                    }
-                }
-            } catch (error) {
-                // eslint-disable-next-line no-console
-                console.error(error);
-            }
+            console.error('Failed to generate OAuth URL');
         }
     };
+    // [/AI]
     return (
         <React.Fragment>
             <div className='main'>
@@ -382,6 +484,21 @@ const AppWrapper = observer(() => {
             >
                 {message}
             </Dialog>
+
+            {/* Trade Type Confirmation Modal */}
+            {(() => {
+                const modalProps = getTradeTypeModalProps();
+                return (
+                    <TradeTypeConfirmationModal
+                        is_visible={modalProps.is_visible}
+                        trade_type_display_name={modalProps.trade_type_display_name}
+                        current_trade_type={modalProps.current_trade_type}
+                        current_trade_type_display_name={modalProps.current_trade_type_display_name}
+                        onConfirm={modalProps.onConfirm}
+                        onCancel={modalProps.onCancel}
+                    />
+                );
+            })()}
         </React.Fragment>
     );
 });

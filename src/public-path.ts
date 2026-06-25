@@ -1,3 +1,5 @@
+import { isPreviewMode, PREVIEW_BASE_PATH } from './utils/is-preview-mode';
+
 export const getUrlBase = (path = '') => {
     const l = window.location;
 
@@ -40,7 +42,7 @@ const loadSurvicateScript = (callback: () => void) => {
     const script = document.createElement('script');
     script.id = 'dbot-survicate';
     script.async = true;
-    script.src = 'https://survey.survicate.com/workspaces/83b651f6b3eca1ab4551d95760fe5deb/web_surveys.js';
+    script.src = 'https://survey.survicate.com/workspaces/83b651f6b3eca1ab4551d95760fe5deb/web_surveys.js'; // trufflehog:ignore
     script.onload = callback;
 
     const firstScript = document.getElementsByTagName('script')[0];
@@ -76,4 +78,8 @@ const initSurvicate = () => {
 
 export { initSurvicate, setSurvicateCalledValue };
 
-setBotPublicPath(getUrlBase('/'));
+// The static preview build is served under /bot/preview (rsbuild assetPrefix), so the
+// runtime public path — used to build asset URLs (audio, Blockly media, favicon) — must
+// carry that prefix. Standalone partner deploys are served at the root (legacy /br_* aware
+// via getUrlBase).
+setBotPublicPath(isPreviewMode() ? `${PREVIEW_BASE_PATH}/` : getUrlBase('/'));

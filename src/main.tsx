@@ -1,20 +1,32 @@
+import { configure } from 'mobx';
 import ReactDOM from 'react-dom/client';
 import { AuthWrapper } from './app/AuthWrapper';
-import { AnalyticsInitializer } from './utils/analytics';
-import { registerPWA } from './utils/pwa-utils';
+// Removed AnalyticsInitializer import - analytics dependency removed
+// See migrate-docs/ANALYTICS_IMPLEMENTATION_GUIDE.md for re-implementation
+import {
+    applyBrandFontFromConfig,
+    applyDocumentTitle,
+    applyFaviconFromLogo,
+    applyPrimaryColorFromConfig,
+} from './utils/document-branding';
+import { performVersionCheck } from './utils/version-check';
 import './styles/index.scss';
 
-AnalyticsInitializer();
-registerPWA()
-    .then(registration => {
-        if (registration) {
-            console.log('PWA service worker registered successfully for Chrome');
-        } else {
-            console.log('PWA service worker disabled for non-Chrome browser');
-        }
-    })
-    .catch(error => {
-        console.error('PWA service worker registration failed:', error);
-    });
+// Configure MobX to handle multiple instances in production builds
+configure({ isolateGlobalState: true });
 
+// Perform version check FIRST - before any other operations
+performVersionCheck();
+
+// Apply deploy-time document branding (tab title, favicon, web font, and primary color).
+applyDocumentTitle();
+applyFaviconFromLogo();
+applyBrandFontFromConfig();
+applyPrimaryColorFromConfig();
+
+// Removed AnalyticsInitializer() call - analytics dependency removed
+
+// App Builder preview branding (incl. PREVIEW_READY handshake) is handled by the
+// src/preview/ listener, mounted from app-content only in the preview deployment
+// (NEXT_PUBLIC_APP_BUILD === 'true') and stripped from standalone partner deploys.
 ReactDOM.createRoot(document.getElementById('root')!).render(<AuthWrapper />);
